@@ -28,29 +28,60 @@ const App: React.FC = () => {
   const serviceRef = useRef<GeminiLiveService | null>(null);
 
   useEffect(() => {
-    // Initialize service
-    serviceRef.current = new GeminiLiveService(
-      (status) => setConnectionState(status as ConnectionState),
-      (vol) => setAudioVolume(vol),
-      (err) => console.error(err),
-      (text, isUser) => {
-        setLogs(prev => [
-            ...prev, 
-            { 
-                id: Date.now().toString(), 
-                role: isUser ? 'user' : 'model', 
-                text, 
-                timestamp: new Date() 
-            }
-        ].slice(-5)); // Keep last 5 messages for display
-      }
-    );
+    // Check for API Key
+    if (!process.env.GEMINI_API_KEY) {
+      console.error("GEMINI_API_KEY is missing");
+      return;
+    }
+
+    try {
+      // Initialize service
+      serviceRef.current = new GeminiLiveService(
+        (status) => setConnectionState(status as ConnectionState),
+        (vol) => setAudioVolume(vol),
+        (err) => console.error(err),
+        (text, isUser) => {
+          setLogs(prev => [
+              ...prev, 
+              { 
+                  id: Date.now().toString(), 
+                  role: isUser ? 'user' : 'model', 
+                  text, 
+                  timestamp: new Date() 
+              }
+          ].slice(-5)); // Keep last 5 messages for display
+        }
+      );
+    } catch (error) {
+      console.error("Failed to initialize GeminiLiveService:", error);
+    }
 
     return () => {
       // Cleanup on unmount
       serviceRef.current?.disconnect();
     };
   }, []);
+
+  if (!process.env.GEMINI_API_KEY) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-slate-900 text-slate-50 font-sans">
+        <div className="max-w-md text-center space-y-6">
+          <h1 className="text-3xl font-serif text-gold-400 font-bold">Setup Required</h1>
+          <p className="text-slate-300">
+            To use this application, you need to provide a Google Gemini API key.
+          </p>
+          <div className="bg-slate-800 p-4 rounded-lg text-left text-sm font-mono text-slate-400 overflow-x-auto">
+            <p>1. Create a <span className="text-gold-400">.env</span> file in the project root.</p>
+            <p className="mt-2">2. Add your API key:</p>
+            <p className="mt-1 text-emerald-400">GEMINI_API_KEY=your_api_key_here</p>
+          </div>
+          <p className="text-xs text-slate-500">
+            You can get an API key from Google AI Studio.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   useEffect(() => {
     if (logsEndRef.current) {
