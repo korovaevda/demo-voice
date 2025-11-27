@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Golden Spice Hostess",
+  "description": "A conversational voice agent demonstration for a restaurant reservation system using Gemini Live API. Supports English and Arabic.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
