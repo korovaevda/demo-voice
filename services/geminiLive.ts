@@ -11,7 +11,7 @@ export class GeminiLiveService {
   private processor: ScriptProcessorNode | null = null;
   private inputSource: MediaStreamAudioSourceNode | null = null;
   private outputNode: GainNode | null = null;
-  
+
   // Audio playback queue management
   private nextStartTime = 0;
   private sources = new Set<AudioBufferSourceNode>();
@@ -47,11 +47,15 @@ export class GeminiLiveService {
       this.inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       // Output: 24kHz from Gemini
       this.outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      
+
       this.outputNode = this.outputAudioContext.createGain();
       this.outputNode.connect(this.outputAudioContext.destination);
 
       // 2. Get Microphone Stream
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("Microphone access is not supported. This often happens on insecure (HTTP) connections. Please use HTTPS or localhost.");
+      }
+
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
       // 3. Initialize Gemini Session
@@ -91,7 +95,7 @@ export class GeminiLiveService {
       // but the `session` object resolved by the promise has it).
       // However, for the SDK structure, we can usually just rely on standard cleanup. 
       // The SDK's connect returns a promise that resolves to the session.
-      
+
     } catch (error) {
       console.error('Failed to connect:', error);
       this.onError(error instanceof Error ? error.message : 'Unknown error');
@@ -101,7 +105,7 @@ export class GeminiLiveService {
 
   private handleOnOpen() {
     this.onStatusChange('connected');
-    
+
     if (!this.inputAudioContext || !this.stream) return;
 
     // Setup input pipeline
@@ -110,7 +114,7 @@ export class GeminiLiveService {
 
     this.processor.onaudioprocess = (e) => {
       const inputData = e.inputBuffer.getChannelData(0);
-      
+
       // Calculate volume for visualizer
       let sum = 0;
       for (let i = 0; i < inputData.length; i++) {
@@ -121,7 +125,7 @@ export class GeminiLiveService {
 
       // Send to API
       const pcmBlob = createPcmBlob(inputData);
-      
+
       if (this.sessionPromise) {
         this.sessionPromise.then(session => {
           session.sendRealtimeInput({ media: pcmBlob });
@@ -141,23 +145,23 @@ export class GeminiLiveService {
     if (outputTranscript) {
       this.onTranscript(outputTranscript, false);
     }
-    
+
     const inputTranscript = message.serverContent?.inputTranscription?.text;
     if (message.serverContent?.turnComplete && inputTranscript) {
-       // We might receive partials, but let's just log on turn complete or if text is present
+      // We might receive partials, but let's just log on turn complete or if text is present
     }
     // Note: inputTranscription is often streamed. We can simplify by just logging whatever comes in if it's substantial.
     if (inputTranscript) {
-        this.onTranscript(inputTranscript, true);
+      this.onTranscript(inputTranscript, true);
     }
 
 
     // 2. Handle Audio Output
     const audioData = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-    
+
     if (audioData) {
       this.nextStartTime = Math.max(this.nextStartTime, this.outputAudioContext.currentTime);
-      
+
       const audioBuffer = await decodeAudioData(
         decodeBase64(audioData),
         this.outputAudioContext,
@@ -168,7 +172,7 @@ export class GeminiLiveService {
       const source = this.outputAudioContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(this.outputNode);
-      
+
       source.addEventListener('ended', () => {
         this.sources.delete(source);
       });
@@ -181,7 +185,7 @@ export class GeminiLiveService {
     // 3. Handle Interruption
     if (message.serverContent?.interrupted) {
       this.sources.forEach(source => {
-        try { source.stop(); } catch (e) {}
+        try { source.stop(); } catch (e) { }
       });
       this.sources.clear();
       this.nextStartTime = 0;
@@ -198,7 +202,7 @@ export class GeminiLiveService {
     if (this.stream) this.stream.getTracks().forEach(track => track.stop());
     if (this.inputAudioContext) await this.inputAudioContext.close();
     if (this.outputAudioContext) await this.outputAudioContext.close();
-    
+
     // Clean up Gemini Session
     // Since the SDK doesn't expose a direct 'disconnect' on the generic type easily without the session object,
     // we use the promise result.
@@ -209,7 +213,7 @@ export class GeminiLiveService {
         const session = await this.sessionPromise;
         // Check if close exists (it should per SDK spec)
         if (typeof session.close === 'function') {
-           session.close();
+          session.close();
         }
       } catch (e) {
         console.warn("Error closing session", e);
