@@ -23,7 +23,9 @@ export class GeminiLiveService {
   private onTranscript: (text: string, isUser: boolean) => void;
 
   private sessionPromise: Promise<any> | null = null;
+  private session: any = null;
   private closeSession: (() => void) | null = null;
+  private isSessionReady = false;
 
   constructor(
     onStatusChange: (status: string) => void,
@@ -31,7 +33,9 @@ export class GeminiLiveService {
     onError: (error: string) => void,
     onTranscript: (text: string, isUser: boolean) => void
   ) {
-    this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const apiKey = process.env.GEMINI_API_KEY;
+    console.log('[GeminiLive] Initializing with API key:', apiKey ? `${apiKey.substring(0, 10)}...` : 'MISSING');
+    this.ai = new GoogleGenAI({ apiKey });
     this.onStatusChange = onStatusChange;
     this.onAudioLevel = onAudioLevel;
     this.onError = onError;
@@ -40,6 +44,8 @@ export class GeminiLiveService {
 
   async connect(language: Language) {
     try {
+      console.log('[GeminiLive] Starting connection process for language:', language);
+      this.isSessionReady = false;
       this.onStatusChange('connecting');
 
       // 1. Setup Audio Contexts
@@ -56,7 +62,9 @@ export class GeminiLiveService {
         throw new Error("Microphone access is not supported. This often happens on insecure (HTTP) connections. Please use HTTPS or localhost.");
       }
 
+      console.log('[GeminiLive] Requesting microphone access...');
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('[GeminiLive] Microphone access granted');
 
       // 3. Initialize Gemini Session
       const config = {
@@ -72,6 +80,12 @@ export class GeminiLiveService {
         },
       };
 
+      console.log('[GeminiLive] Connecting to Gemini Live API with config:', {
+        model: config.model,
+        voice: config.config.speechConfig?.voiceConfig,
+        language
+      });
+
       // We use a promise wrapper to ensure we have the session before sending data
       this.sessionPromise = this.ai.live.connect({
         model: config.model,
@@ -79,17 +93,27 @@ export class GeminiLiveService {
         callbacks: {
           onopen: this.handleOnOpen.bind(this),
           onmessage: this.handleOnMessage.bind(this),
-          onclose: () => {
+          onclose: (event) => {
+            console.log('[GeminiLive] Session closed');
+            console.log('[GeminiLive] Close event:', event);
+            console.log('[GeminiLive] Close code:', event?.code);
+            console.log('[GeminiLive] Close reason:', event?.reason);
+            this.isSessionReady = false;
             this.onStatusChange('disconnected');
-            console.log("Session closed");
           },
           onerror: (err) => {
-            console.error("Session error:", err);
-            this.onError("Connection error occurred.");
+            console.error('[GeminiLive] Session error:', err);
+            console.error('[GeminiLive] Error details:', JSON.stringify(err, null, 2));
+            const errorMessage = err instanceof Error ? err.message : 'Connection error occurred';
+            this.onError(`Connection error: ${errorMessage}`);
             this.onStatusChange('error');
           }
         }
       });
+
+      // Store the session for later use
+      this.session = await this.sessionPromise;
+      console.log('[GeminiLive] Session promise resolved, session object:', this.session);
 
       // We need to capture the close method effectively (it's not directly returned by connect in the simplified view, 
       // but the `session` object resolved by the promise has it).
@@ -97,16 +121,23 @@ export class GeminiLiveService {
       // The SDK's connect returns a promise that resolves to the session.
 
     } catch (error) {
-      console.error('Failed to connect:', error);
-      this.onError(error instanceof Error ? error.message : 'Unknown error');
+      console.error('[GeminiLive] Failed to connect:', error);
+      console.error('[GeminiLive] Error stack:', error instanceof Error ? error.stack : 'N/A');
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      this.onError(`Connection failed: ${errorMessage}`);
       this.onStatusChange('error');
     }
   }
 
   private handleOnOpen() {
+    console.log('[GeminiLive] Session opened successfully');
+    this.isSessionReady = true;
     this.onStatusChange('connected');
 
-    if (!this.inputAudioContext || !this.stream) return;
+    if (!this.inputAudioContext || !this.stream) {
+      console.error('[GeminiLive] Audio context or stream not available');
+      return;
+    }
 
     // Setup input pipeline
     this.inputSource = this.inputAudioContext.createMediaStreamSource(this.stream);
@@ -123,26 +154,71 @@ export class GeminiLiveService {
       const rms = Math.sqrt(sum / inputData.length);
       this.onAudioLevel(rms);
 
-      // Send to API
+      // Send to API (only if session is ready)
+      if (!this.isSessionReady) {
+        return; // Skip sending audio until session is fully open
+      }
+
       const pcmBlob = createPcmBlob(inputData);
 
       if (this.sessionPromise) {
         this.sessionPromise.then(session => {
-          session.sendRealtimeInput({ media: pcmBlob });
-        }).catch(err => console.error("Error sending audio:", err));
+          // Check if session is still valid before sending
+          if (!session || typeof session.sendRealtimeInput !== 'function') {
+            console.error('[GeminiLive] Session is not valid or already closed');
+            this.isSessionReady = false;
+            return;
+          }
+
+          try {
+            session.sendRealtimeInput({ media: pcmBlob });
+          } catch (err) {
+            console.error('[GeminiLive] Exception sending audio:', err);
+            this.isSessionReady = false;
+            this.onError('Failed to send audio data');
+          }
+        }).catch(err => {
+          console.error('[GeminiLive] Error sending audio:', err);
+          this.isSessionReady = false;
+          this.onError('Failed to send audio data');
+        });
       }
     };
 
     this.inputSource.connect(this.processor);
     this.processor.connect(this.inputAudioContext.destination);
+    console.log('[GeminiLive] Audio pipeline connected and ready to send data');
   }
 
   private async handleOnMessage(message: LiveServerMessage) {
-    if (!this.outputAudioContext || !this.outputNode) return;
+    console.log('[GeminiLive] Received message:', message);
+
+    // Check for setup errors or other error messages
+    if (message.setupComplete) {
+      console.log('[GeminiLive] Setup complete:', message.setupComplete);
+    }
+
+    if (message.serverContent?.modelTurn?.parts) {
+      const parts = message.serverContent.modelTurn.parts;
+      parts.forEach((part: any) => {
+        if (part.text) {
+          console.log('[GeminiLive] Model text response:', part.text);
+        }
+        if (part.executableCode) {
+          console.log('[GeminiLive] Executable code:', part.executableCode);
+        }
+      });
+    }
+
+    if (!this.outputAudioContext || !this.outputNode) {
+      console.warn('[GeminiLive] Audio context not ready');
+      return;
+    }
 
     // 1. Handle Transcripts
     const outputTranscript = message.serverContent?.outputTranscription?.text;
     if (outputTranscript) {
+      console.log('[GeminiLive] Model transcript:', outputTranscript);
       this.onTranscript(outputTranscript, false);
     }
 
@@ -152,6 +228,7 @@ export class GeminiLiveService {
     }
     // Note: inputTranscription is often streamed. We can simplify by just logging whatever comes in if it's substantial.
     if (inputTranscript) {
+      console.log('[GeminiLive] User transcript:', inputTranscript);
       this.onTranscript(inputTranscript, true);
     }
 
@@ -184,6 +261,7 @@ export class GeminiLiveService {
 
     // 3. Handle Interruption
     if (message.serverContent?.interrupted) {
+      console.log('[GeminiLive] Playback interrupted');
       this.sources.forEach(source => {
         try { source.stop(); } catch (e) { }
       });
@@ -193,6 +271,8 @@ export class GeminiLiveService {
   }
 
   async disconnect() {
+    console.log('[GeminiLive] Disconnecting...');
+    this.isSessionReady = false;
     // Clean up Web Audio
     if (this.processor) {
       this.processor.disconnect();
@@ -216,10 +296,11 @@ export class GeminiLiveService {
           session.close();
         }
       } catch (e) {
-        console.warn("Error closing session", e);
+        console.warn('[GeminiLive] Error closing session', e);
       }
     }
 
+    console.log('[GeminiLive] Disconnected successfully');
     this.onStatusChange('disconnected');
     this.sessionPromise = null;
   }
