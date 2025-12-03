@@ -1,56 +1,159 @@
-# Deployment & Background Execution
+# Deployment Guide
 
-## Running in the Background
+## Server Deployment (Production)
 
-To keep the application running in the background (even after you close the terminal), you can use a process manager like **PM2** or the `nohup` command.
-
-### Option 1: Using PM2 (Recommended)
-
-PM2 is a production process manager for Node.js. It keeps your app alive forever and reloads it without downtime.
-
-1.  **Install PM2 globally:**
-    ```bash
-    npm install -g pm2
-    ```
-
-2.  **Start the application:**
-    
-    For development (`npm run dev`):
-    ```bash
-    pm2 start npm --name "demo-voice" -- run dev
-    ```
-
-    For production (recommended for VPS):
-    ```bash
-    # First build the app
-    npm run build
-    
-    # Then preview/serve it
-    pm2 start npm --name "demo-voice" -- run preview -- --host
-    ```
-
-3.  **Manage the process:**
-    - View status: `pm2 status`
-    - View logs: `pm2 logs demo-voice`
-    - Stop app: `pm2 stop demo-voice`
-    - Restart app: `pm2 restart demo-voice`
-
-### Option 2: Using nohup (Simple)
-
-If you don't want to install PM2, you can use the built-in `nohup` command.
+### Step 1: Clone and Setup
 
 ```bash
-# Run in background and redirect output to a log file
-nohup npm run dev > app.log 2>&1 &
+# Navigate to your deployment directory
+cd /opt
+
+# Clone the repository
+git clone https://github.com/korovaevda/demo-voice.git
+
+# Enter the project directory
+cd demo-voice
+
+# Install dependencies
+npm install
+
+# Create .env file with your API key
+echo "GEMINI_API_KEY=your_api_key_here" > .env
+
+# Build the production bundle
+npm run build
 ```
 
-- To stop it, you'll need to find the process ID (`ps aux | grep npm`) and `kill` it.
+### Step 2: Deploy with PM2 (Recommended)
 
-## VPS Configuration
+**Option A: Using ecosystem.config.cjs (Easiest)**
 
-Ensure your VPS firewall allows traffic on port `3000` (or whichever port you are using).
-
-If you are using `npm run preview`, it serves on port `4173` by default. You can specify the port:
 ```bash
-npm run preview -- --port 3000 --host
+# Install PM2 globally if not already installed
+npm install -g pm2
+
+# Create logs directory
+mkdir -p logs
+
+# Start the application using the ecosystem config
+pm2 start ecosystem.config.cjs
+
+# Save PM2 process list (to restart on server reboot)
+pm2 save
+
+# Setup PM2 to start on system boot
+pm2 startup
 ```
+
+**Option B: Manual PM2 command**
+
+```bash
+# For production (preview server)
+pm2 start npm --name "demo-voice" -- run preview -- --host --port 3000
+
+# For development (not recommended for production)
+pm2 start npm --name "demo-voice" -- run dev -- --host
+```
+
+### Step 3: Manage the Application
+
+```bash
+# View status
+pm2 status
+
+# View logs (real-time)
+pm2 logs demo-voice
+
+# View logs (from file, if using ecosystem config)
+tail -f logs/combined.log
+
+# Restart application
+pm2 restart demo-voice
+
+# Stop application
+pm2 stop demo-voice
+
+# Delete from PM2
+pm2 delete demo-voice
+```
+
+### Step 4: Update Deployment
+
+```bash
+# Navigate to project directory
+cd /opt/demo-voice
+
+# Pull latest changes
+git pull
+
+# Install any new dependencies
+npm install
+
+# Rebuild
+npm run build
+
+# Restart PM2 process
+pm2 restart demo-voice
+```
+
+## Local Development
+
+```bash
+# Install dependencies
+npm install
+
+# Create .env file
+echo "GEMINI_API_KEY=your_api_key_here" > .env
+
+# Start development server
+npm run dev
+```
+
+## Important Notes
+
+### HTTPS Requirement
+⚠️ **This application uses `getUserMedia` for microphone access**, which requires:
+- **Localhost**: Works with HTTP
+- **Remote server**: **MUST use HTTPS** (not HTTP)
+
+To use HTTPS on your server, you need to:
+1. Use a reverse proxy like **nginx** or **Caddy**
+2. Configure SSL certificate (Let's Encrypt recommended)
+
+### Firewall Configuration
+Ensure your server firewall allows traffic on the required port:
+```bash
+# For Ubuntu/Debian with ufw
+sudo ufw allow 3000/tcp
+
+# Or if using nginx as reverse proxy
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+```
+
+### Environment Variables
+Make sure `.env` file contains:
+```
+GEMINI_API_KEY=your_actual_api_key
+```
+
+## Troubleshooting
+
+**PM2 not found:**
+```bash
+npm install -g pm2
+```
+
+**Port already in use:**
+```bash
+# Find process using port 3000
+lsof -i :3000
+
+# Kill the process
+kill -9 <PID>
+```
+
+**Application not accessible from outside:**
+- Check if `--host` flag is used (required for external access)
+- Check firewall settings
+- Verify the port is correct
